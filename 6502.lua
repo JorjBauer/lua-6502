@@ -402,7 +402,7 @@ _M.opcodes = {
    [0xC0] = { _M.optype.CPY    , _M.addrmode.IMM    , 2 },
    [0xC1] = { _M.optype.CMP    , _M.addrmode.INX    , 6 }, -- [2]
    [0xC2] = { _M.optype.ILLEGAL, _M.addrmode.ILLEGAL, 2 },
-   [0xC3] = { _M.optype.DCP,     _M.addrmode.INX,     2 }, -- fixme -- cycle count of this illegal instruction?
+   [0xC3] = { _M.optype.ILLEGAL, _M.addrmode.ILLEGAL, 2 }, -- fixme -- cycle count of this illegal instruction?
    [0xC4] = { _M.optype.CPY    , _M.addrmode.ZER    , 3 }, -- [2]
    [0xC5] = { _M.optype.CMP    , _M.addrmode.ZER    , 3 }, -- [2]
    [0xC6] = { _M.optype.DEC    , _M.addrmode.ZER    , 5 }, -- [2]
@@ -518,7 +518,7 @@ _M.getParam = {
 			    local zprelParam2 = string.unpack("b", string.pack("B", self:readmem(self.pc)))
 
 			    self.pc = (self.pc + 1) & 0xFFFF
-			    zprelParam2 = zprelParam2 + pc
+			    zprelParam2 = (zprelParam2 + self.pc) & 0xFFFF
 			    return p, zprelParam2
 			 end,
    [_M.addrmode.ABI] = function(self)
@@ -879,6 +879,7 @@ _M.operations = {
    [_M.optype.TSB] = function(self, param)
 			local m = self:readmem(param)
 			local v = self.A & m
+			m = m | self.A
 			self:writemem(param, m)
 			if (v == 0) then
 			   self.F = self.F | self.flags.Z
@@ -1123,10 +1124,10 @@ _M.operations = {
 		     end,
    [_M.optype.BBR] = function(self, param, zprelParam2, m)
 			-- the bit to test is encoded in the opcode [m].
-			local btt = 1 << ((m > 4) & 0x07)
+			local btt = 1 << ((m >> 4) & 0x07)
 			local v = self:readmem(param) -- zero-page memory location to test
 			if ((v & btt) == 0x00) then
-			   pc = zprelParam2
+			   self.pc = zprelParam2
 			end
 			return 0
 		     end,
@@ -1134,7 +1135,7 @@ _M.operations = {
 			local btt = 1 << ((m >> 4) & 0x07)
 			local v = self:readmem(param)
 			if ((v & btt) ~= 0x00) then
-			   pc = zprelParam2
+			   self.pc = zprelParam2
 			end
 			return 0
 		     end,
