@@ -1020,46 +1020,66 @@ _M.operations = {
 			return 0
 		     end,
    [_M.optype.SBC] = function(self, param)
-			local ret = 0
-			local memTemp = self:readmem(param) ~ 0xFF
+			local ret = 0 -- number of additional cycles
+			local B = self:readmem(param) ~ 0xFF
+			local Cin = (self.F & self.flags.C)
+			local Cout -- expected carry out
+			local Vout -- expected oVerflow out
+			local Aout -- expected accumulator out
 
-			local c,v
-			if ((self.F & self.flags.D) ~= 0x00) then
-			   -- Decimal mode
-			   ret = 1
-			   c = (self.A & 0x0F) + (memTemp & 0x0F) + (self.F & self.flags.C)
-			   if (c < 0x10) then
-			      c = (c - 0x06) & 0x0F
-			   end
-			   c = c + (self.A & 0xF0) + (memTemp & 0xF0)
-			   if (c < 0x100) then
-			      c = (c + 0xa0) & 0xFF
-			   end
-			   v = (c ~ self.A) & 0x80
+			if ((self.F & self.flags.D) == 0x00) then
+			   -- Simple Bin mode. Same as ADC's bin mode.
+
+			   Aout = self.A + B + Cin
+			   Vout = (self.A ~ Aout) & (B ~ Aout) & 0x80
+			   Cout = (Aout >= 0x100) and 1 or 0
+			   self.A = Aout & 0xFF
 			else
-			   c = self.A + memTemp + (self.F & self.flags.C)
-			   v = (c ~ self.A) & 0x80
+			   -- Emulating decimal mode's handling of
+			   -- invalid BCD values is tricky.
+			   ret = 1
+
+			   -- FIXME: This can probably be optimized;
+			   -- this passes all 6502 decimal mode tests,
+			   -- but is seemingly doing a lot of the same
+			   -- work twice
+
+			   -- First calculate the V and C flags
+			   Aout = (self.A & 0x0F) + (B & 0x0F) + Cin
+			   if (Aout < 0x10) then
+			      Aout = (Aout - 0x06) & 0x0F
+			   end
+			   Aout = Aout + (self.A & 0xF0) + (B & 0xF0)
+                           Vout = (self.A ~ Aout) & (B ~ Aout) & 0x80
+			   if (Aout < 0x100) then
+			      Aout = (Aout + 0xa0) & 0xFF
+			   end
+
+                           Cout = (Aout >= 0x100) and 1 or 0
+
+			   -- Calculate the actual A output
+			   B = self:readmem(param)
+			   local AL = (self.A & 0x0F) - (B & 0x0F) + (Cin - 1)
+			   Aout = self.A - B + Cin - 1
+			   if (Aout < 0) then Aout = Aout - 0x60 end
+			   if (AL < 0) then Aout = Aout - 0x06 end
+
+			   self.A = Aout & 0xFF
 			end
 
-
-			if (((self.A ~ memTemp) & 0x80) ~= 0) then
-			   v = 0
-			end
-
-			if (c > 0xFF) then
+			if (Cout ~= 0x00) then
 			   self.F = self.F | self.flags.C
 			else
 			   self.F = self.F & ~self.flags.C
 			end
-
-			if (v ~= 0x00) then
+			if (Vout ~= 0x00) then 
 			   self.F = self.F | self.flags.V
 			else
 			   self.F = self.F & ~self.flags.V
 			end
 
-			self.A = c & 0xFF
 			self:setnz(self.A)
+
 			return ret
 		     end,
    [_M.optype.ADC] = function(self, param)
