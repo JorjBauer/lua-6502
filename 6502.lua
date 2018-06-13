@@ -472,6 +472,7 @@ _M.opcodes = {
 --     6502 emulation mode (e=1)                                                       
 
 _M.getParam = {
+   [_M.addrmode.ILLEGAL] = function(self) return nil end,
    [_M.addrmode.IMP] = function(self) return nil end,
    [_M.addrmode.ACC] = function(self) return nil end,
    [_M.addrmode.IMM] = function(self) 
@@ -698,7 +699,6 @@ _M.operations = {
 		     end,
    [_M.optype.DEX] = function(self, param)
 			self.X = (self.X - 1) & 0xFF
-			if (self.X < 0) then self.X = 0xFF end
 			self:setnz(self.X)
 			return 0
 		     end,
@@ -923,7 +923,7 @@ _M.operations = {
 			else
 			   self.F = self.F & ~self.flags.C
 			end
-			v = v << 1
+			v = (v << 1) & 0xFF
 			if ((v & 0x80) ~= 0x00) then
 			   self.F = self.F | self.flags.N
 			else
@@ -960,7 +960,7 @@ _M.operations = {
 		     end,
    [_M.optype.ROL] = function(self, param)
 			local m = self:readmem(param)
-			local v = m << 1
+			local v = (m << 1) & 0xFF
 			if ((self.F & self.flags.C) ~= 0x00) then
 			   v = v | 0x01
 			end
@@ -1020,19 +1020,22 @@ _M.operations = {
 			return 0
 		     end,
    [_M.optype.SBC] = function(self, param)
+			local ret = 0
 			local memTemp = self:readmem(param) ~ 0xFF
+
 			local c,v
 			if ((self.F & self.flags.D) ~= 0x00) then
 			   -- Decimal mode
+			   ret = 1
 			   c = (self.A & 0x0F) + (memTemp & 0x0F) + (self.F & self.flags.C)
 			   if (c < 0x10) then
 			      c = (c - 0x06) & 0x0F
 			   end
 			   c = c + (self.A & 0xF0) + (memTemp & 0xF0)
-			   v = (c >> 1) ~ c
 			   if (c < 0x100) then
 			      c = (c + 0xa0) & 0xFF
 			   end
+			   v = (c ~ self.A) & 0x80
 			else
 			   c = self.A + memTemp + (self.F & self.flags.C)
 			   v = (c ~ self.A) & 0x80
@@ -1057,45 +1060,89 @@ _M.operations = {
 
 			self.A = c & 0xFF
 			self:setnz(self.A)
-			return 0
+			return ret
 		     end,
    [_M.optype.ADC] = function(self, param)
-			local memTemp = self:readmem(param)
+			local ret = 0 -- number of additional cycles
+			local B = self:readmem(param)
+			local Cin = (self.F & self.flags.C)
+			local Cout -- expected carry out
+			local Vout -- expected oVerflow out
+			local Aout -- expected accumulator out
 
-			local ret = 0
-			local c,v
-			if ((self.F & self.flags.D) ~= 0x00) then
-			   -- decimal mode
-			   ret = 1
-			   c = (self.A & 0x0F) + (memTemp & 0x0F) + (self.F & self.flags.C)
-			   if (c > 0x09) then
-			      c = (c - 0x0a) | 0x10
-			   end
-			   c = c + (self.A & 0xF0) + (memTemp & 0xF0)
-			   v = (c >> 1) ~ c
-			   if (c > 0x99) then
-			      c = c + 0x60
-			   end
+			if ((self.F & self.flags.D) == 0x00) then
+
+			   -- Simple Bin mode. Thank goodness.
+
+			   Aout = self.A + B + Cin
+			   -- 'v' is described really well here:
+			   --    http://www.righto.com/2012/12/the-6502-overflow-flag-explained.html
+
+			   -- Overflow means "answer does not fit in to a signed byte".
+			   --
+			   -- If bits A7 and B7 are not the same, then there's never overflow.
+			   -- 
+			   -- If the signs of the two are the same,
+			   -- but the sign of the output is different,
+			   -- then overflow obviously happened. Both of these do that...
+--			   Vout = (((self.A ~ B) & 0x80) == 0x00) and ((Aout ~ B) & 0x80) or 0
+			   Vout = (self.A ~ Aout) & (B ~ Aout) & 0x80
+
+			   Cout = (Aout >= 0x100) and 1 or 0
+			   self.A = Aout & 0xFF
 			else
-			   c = self.A + memTemp + (self.F & self.flags.C)
-			   v = (c ~ self.A) & 0x80
+			   -- Complex Dec mode. 
+			   -- Per
+			   -- http://www.6502.org/tutorials/decimal_mode.html.
+			   ret = 1
+
+			   -- Done with the V flag processing. Calculate Aout and Cout.
+			   Aout = (self.A & 0x0F) + (B & 0x0F) + Cin
+			   local tmpOverflow = 0
+			   if (Aout >= 0x0A) then
+			      tmpOverflow = 0x10
+			      Aout = (Aout + 0x06) & 0x0F
+			   end
+			   Aout = Aout | (self.A & 0xF0)
+			   Aout = Aout + (B & 0xF0) + tmpOverflow
+
+			   -- Overflow for BCD mode is calculated
+			   -- here, before rolling over the high
+			   -- nybble. If both A and B have the same
+			   -- sign, and the sign for Aout is different
+			   -- than A and B, then overflow happened.
+
+			   Vout = 0
+			   if ( ((self.A ~ B) & 0x80) == 0x00 ) then
+			      -- A and B are of the same sign
+			      if (((self.A ~ Aout)&0x80) ~= 0x00) then
+				 -- A/B have a different sign from C, so it overflowed
+				 Vout = 1
+			      end
+			   end
+
+			   -- Back to calculating the resultant A and C
+			   if (Aout >= 0xA0) then
+			      Aout = Aout + 0x60
+			      Cout = 1
+			   else
+			      Cout = 0
+			   end
+
+			   self.A = Aout & 0xFF
 			end
 
-			if (((self.A ~ memTemp) & 0x80) ~= 0x00) then
-			   v = 0
-			end
-			
-			if (c > 0xFF) then
+			if (Cout ~= 0x00) then
 			   self.F = self.F | self.flags.C
 			else
 			   self.F = self.F & ~self.flags.C
 			end
-			if (v ~= 0x00) then 
+			if (Vout ~= 0x00) then 
 			   self.F = self.F | self.flags.V
 			else
 			   self.F = self.F & ~self.flags.V
 			end
-			self.A = c & 0xFF
+
 			self:setnz(self.A)
 
 			return ret
@@ -1165,7 +1212,17 @@ _M.operations = {
 			return 0
 		     end,
    [_M.optype.ILLEGAL] = function(self, _, _, m)
-			    print("Programming error: unhandled opcode " .. m)
+			    -- Treat these all as NOPs. Also emulate the 
+			    -- 65C02 behavior...
+			    if (m == 0x02 or m == 0x22 or m == 0x42 or m == 0x62 or m == 0x82 or
+				m == 0xC2 or m == 0xE2 or m == 0x44 or m == 0x54 or m == 0xd4 or
+				m == 0xf4) then
+			       self.pc = (self.pc + 1) & 0xFFFF
+			    end
+			    if (m == 0x5c or m == 0xdc or m == 0xfc) then
+			       self.pc = (self.pc + 2) & 0xFFFF
+			    end
+
 			    return 0
 			 end,
 }
@@ -1303,21 +1360,6 @@ function _M:step()
    self.pc = (self.pc + 1) & 0xFFFF
 
    local opcode = self.opcodes[m]
-   if (opcode[1] == self.opcodes.ILLEGAL or
-       opcode[2] == self.addrmode.ILLEGAL) then
-      print(string.format("** Illegal opcode 0x%X at address 0x%X", m, self.pc-1))
-      -- Special invalid opcodes tht also have arguments...
-      if (m == 0x02 or m == 0x22 or m == 0x42 or m == 0x62 or m == 0x82 or
-	  m == 0xC2 or m == 0xE2 or m == 0x44 or m == 0x54 or m == 0xd4 or 
-	  m == 0xf4) then
-	 self.pc = (self.pc + 1) & 0xFFFF
-      end
-      if (m == 0x5c or m == 0xdc or m == 0xfc) then
-	 self.pc = (self.pc + 2) & 0xFFFF
-      end
-      m = 0xEA -- substitute NOP
-      opcode = self.opcodes[m]
-   end
 
    -- Look at the addressing mode to determine the parameter
    local param, zprelParam2 = self.getParam[opcode[2]](self)
@@ -1338,7 +1380,7 @@ function _M:readmem(a)
 end
 
 function _M:writemem(a,v)
-   self.ram[a] = v & 0xFF
+   self.ram[a] = v
 end
 
 return _M
