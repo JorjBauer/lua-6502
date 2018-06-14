@@ -7,82 +7,23 @@ Lua bitwise libraries. I'm more inclined to just leave it at Lua
 
 # How would you use this?
 
-Well, if I wanted to build an (original) Apple ][ emulator, I would
-probably do it similarly to how I structured the tests. First build a
-CPU...
+Well, I started to write a "if I wanted to make an Apple emulator" section here... but then I just wrote the emulator instead.
 
-``` lua
-local _6502 = require '6502'
-local cpu = _6502:new()
-```
+In the **apple1/** directory is a reasonable facsimile of an Apple 1. 
 
-... and then override the simple memory array with a memory management
-unit, which implements the various pieces of Apple ][ memory magic:
+The only tricky piece is the Memory Management Unit; it has two important features - the PIA 6820 interface, and immutable memory.
 
-``` lua
-local mmu = { ram = {} }
-local mmu_metatable = { __index = function(t, key)
-                                     return t.ram[key] or 0
-                                  end,
-                        __newindex = function(t, k, v)
-                                        if (k == 0xF001 and v ~= nil) then
-                                           io.write(string.format("%c", v))
-                                        end
-                                        if (k == 0x200 and v ~= nil) then
-                                           if (v == 240) then
-                                              print("All tests successful!")
-                                              os.exit(0)
-                                           end
-                                           print(string.format("Start test %d", v))
-                                        end
-                                        t.ram[k] = v
-                                     end,
-                     }
-setmetatable(mmu, mmu_metatable)
-cpu.ram = mmu
-```
+The PIA 6820 is an interface chip that was used in the Apple 1 to attach the keyboard and screen drivers to the 6502. It has two control registers: DSPCR (the display control register) and KBDCR (the keyboard control register) and two data registers that pair to those (DSP and KBD). If something reads from the KBD data register, then the KDBCR is reset to 0x27 before the read happens; and if something writes to DSP, then the DSPCR is checked before allowing the write. (There's also some initialization of KBDCR the first time it's used.) These pieces of miscellania are implemented via __index (read) and __newindex (write) operations in the MMU's metatable.
 
-Basically, the **__index** function gets called for any memory "read"; and
-the **__newindex** function gets called for any "write". This MMU was
-specifically built for the verbose CPU test; whenever it wants to
-output a character, the test writes it to memory location 0xF001; and
-whenever it starts a new test, it writes to memory location 0x200. So
-those two memory locations are treated specially when writing to this
-MMU; but it returns straight out of its "ram" table when reading
-(since there's nothing special about its reads).
+ROM is emulated via the immutable memory feature of the MMU. The MMU itself contains two tables: one named ram[], and the other named immutable[]. When a read happens from the MMU as a table object, the data is actually retrieved from the ram[] table. And when writing, the value is written to the ram[] table *if* the immutable[] table does not have a value for that address.
 
-For memory in an Apple ][, it would do straight reads and writes for
-any memory <= 0xC000. For 0xC000 through 0xCFFF, you'd do something
-with the hardware I/O (where reads and writes are both special); and
-then from 0xD000 through 0xFFFF you have ROM, which will need to be
-loaded from a file or some such:
+So when the monitor and basic ROMs are loaded at startup, those memory locations are marked as immutable after their initial set.
 
-``` lua
-local f = assert(io.open("apple2o.rom", "rb") )
-local data = f:read("*a")
-assert(#data == 12288)
+In checkForInput(), if the KBDCR register shows that the keyboard data register is capable of storing new data, then a key is read (non-blocking, thanks to **stdscr:nodelay(true)**) using **stdscr:getch()**. Assuming a key has been pressed, the value is manipulated to be the value the Apple 1 wants (all uppercase); and then the high bit is set (indicating it's new data) and stored in the KBD data register. The KBDCR register is set to 0xA7, and now the Apple 1 thinks a key has been pressed.
 
-local i = 0
-while (i < #data) do
-   mmu[0xC000 + i] = data:byte(i+1)
-   i = i + 1
-end
-```
+In updateScreen(), we look at the high bit of the DSP register; if it's set, then a new character needs to be output. The character is turned in to an appropriate ascii value, is put on the screen, the cursor moved forward and scrolling taken care of if necessary; then the high bit is cleared, and the value is stored back in DSP (indicating what the key pressed *was*, but that it's no longer a new keypress). **stdscr:redraw()** tells curses to flush the data to the terminal, and then it's done.
 
-Finally, you would reinitialize the CPU, perform a reset, and then
-start running it in a loop.
-
-``` lua
-cpu:init()
-cpu:rst()
-while (true) do
-   cpu:step()
-end
-```
-
-Of course, then you get in to I/O issues, like keyboards and disk
-drives; how you're going to draw a display; performance issues; what
-about proper speed timing?; and details, details, details...
+Of course, this brute-force approach isn't terribly efficient, and takes a number of shortcuts. It has no speed throttling, so it's slamming the CPU of your machine and runs substantially faster than the original Apple 1; it runs in a terminal, meaning it doesn't use the Apple font or blinking '@' cursor; it's emulating a 65C02 instead of a 6502, so there are opcodes that will actually do things that shouldn't. But it proves the point: in 192 lines of Lua, it's possible to write a fairly decent Apple 1 emulator.
 
 # Tests
 
