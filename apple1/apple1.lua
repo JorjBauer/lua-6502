@@ -1,15 +1,17 @@
 #!/usr/bin/env lua5.3
 
-require 'std.strict'
-
 require 'lib' ("..")
-local curses = require 'curses'
-local _6502 = require '6502'
 
+local _ENV = require 'std.normalize' {
+   'std.strict',
+   'const',
+   'io',
+   'curses',
+}
+
+local _6502 = require '6502'
 local cpu = _6502:new()
 
-const = require "const"
-local inspect = require "inspect"
 
 -- Per Apple-1 Operation Manual (1976)
 local _c = const {
