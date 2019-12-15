@@ -1,8 +1,7 @@
-local string = require "string"
 local _ENV = require 'std.normalize' {
    'std.strict',
    'const',
---   'string', -- this neuters string.pack and string.unpack, not sure why.
+   'string',
    'io',
 }
 
@@ -505,7 +504,7 @@ _M.getParam = {
 
 			  -- Have to convert this from an unsigned byte to a signed byte.
 			  -- Values are from -128 to +127.
-			  local p = string.unpack("b", string.pack("B", self:readmem(self.pc)))
+			  local p = self:unsignedToSigned(self:readmem(self.pc))
 			  self.pc = (self.pc + 1) & 0xFFFF
 			  p = (p + self.pc) & 0xFFFF
 			  return p
@@ -516,7 +515,7 @@ _M.getParam = {
 			    self.pc = (self.pc + 1) & 0xFFFF
 
 			    -- Again, have to convert from unsigned byte to signed byte
-			    local zprelParam2 = string.unpack("b", string.pack("B", self:readmem(self.pc)))
+			    local zprelParam2 = self:unsignedToSigned(self:readmem(self.pc))
 
 			    self.pc = (self.pc + 1) & 0xFFFF
 			    zprelParam2 = (zprelParam2 + self.pc) & 0xFFFF
@@ -1401,6 +1400,11 @@ end
 
 function _M:writemem(a,v)
    self.ram[a] = v
+end
+
+function _M:unsignedToSigned(v)
+   if ((v & 0x80) == 0x00) then return v end
+   return -((v ~ 0xFF) + 1)
 end
 
 return _M
